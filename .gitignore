@@ -1,0 +1,18 @@
+# User-specific settings (may contain personal paths/preferences)
+settings.json
+
+# Claude Code local project settings (contains personal permission paths)
+.claude/
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# macOS
+.DS_Store
+
+# Compiled app bundle
+claude_monitor.app

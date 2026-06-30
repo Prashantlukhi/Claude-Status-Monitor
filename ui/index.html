@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Claude Monitor</title>
+<style>
+  :root{
+    --accent:#6E8BFF; --scale:1;
+    --panel:rgba(16,19,26,0.92);
+    --line:rgba(255,255,255,0.07);
+    --text:#E7ECF3; --muted:#8A94A6;
+    --working:#FFB638; --waiting:#FF453A; --done:#32D74B; --idle:#6B7686;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{background:transparent;overflow:hidden;-webkit-user-select:none;user-select:none;
+    font-size:calc(13px * var(--scale));color:var(--text);font-family:var(--sans)}
+  body{padding:7px}
+
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:16px;
+    -webkit-backdrop-filter:blur(22px) saturate(1.3);backdrop-filter:blur(22px) saturate(1.3);
+    box-shadow:0 18px 50px rgba(0,0,0,0.55),inset 0 1px 0 rgba(255,255,255,0.05);overflow:hidden}
+
+  .bar{display:flex;align-items:center;gap:8px;padding:9px 11px 8px;border-bottom:1px solid var(--line)}
+  .bar .grip{flex:1;display:flex;align-items:center;gap:8px;cursor:grab}
+  .grip:active{cursor:grabbing}
+  .brand{font-family:var(--mono);font-size:0.72rem;letter-spacing:0.14em;text-transform:uppercase;color:var(--muted)}
+  .pip{width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 8px var(--accent)}
+  .bar button{appearance:none;border:0;background:transparent;color:var(--muted);width:24px;height:24px;
+    border-radius:7px;cursor:pointer;display:grid;place-items:center;transition:.15s}
+  .bar button:hover{background:rgba(255,255,255,0.07);color:var(--text)}
+  .bar button svg{width:15px;height:15px}
+
+  /* compact-at-rest: show only the lamp rail + the expand control; hide labels & brand.
+     'peek' (hover) or resting-full both reveal everything. */
+  body.compact:not(.peek) .brand{display:none}
+  body.compact:not(.peek) .meta{display:none}
+  body.compact:not(.peek) #gearBtn,
+  body.compact:not(.peek) #quitBtn{display:none}
+  body.compact:not(.peek) .sig{justify-content:center;padding:7px 0}
+  body.compact:not(.peek) .bar{padding:8px 6px;justify-content:center}
+
+  .tower{padding:6px 6px 8px;display:flex;flex-direction:column;gap:2px;position:relative}
+  .tower::before{content:"";position:absolute;left:23px;top:14px;bottom:14px;width:2px;
+    background:linear-gradient(var(--line),transparent);border-radius:2px}
+  body.compact:not(.peek) .tower::before{left:50%;transform:translateX(-1px)}
+
+  .sig{display:flex;align-items:center;gap:11px;padding:8px 9px;border-radius:11px;cursor:pointer;
+    position:relative;transition:background .15s}
+  .sig:hover{background:rgba(255,255,255,0.05)}
+
+  .lamp{--c:var(--idle);position:relative;flex:none;width:24px;height:24px;border-radius:50%;
+    background:radial-gradient(circle at 35% 30%,color-mix(in srgb,var(--c) 92%,#fff) 0%,var(--c) 55%,
+      color-mix(in srgb,var(--c) 60%,#000) 100%);
+    box-shadow:0 0 0 1px rgba(0,0,0,0.35),0 0 12px -1px var(--c),inset 0 1px 1px rgba(255,255,255,0.45);
+    display:grid;place-items:center;color:rgba(0,0,0,0.62)}
+  .lamp svg{width:13px;height:13px;display:none}
+  body.icons .lamp svg{display:block}
+  .lamp[data-s="working"]{--c:var(--working)}
+  .lamp[data-s="waiting"]{--c:var(--waiting)}
+  .lamp[data-s="done"]{--c:var(--done)}
+  .lamp[data-s="idle"]{--c:var(--idle)}
+  .lamp[data-s="waiting"]::after{content:"";position:absolute;inset:-4px;border-radius:50%;
+    border:2px solid var(--waiting);opacity:0;animation:ring 1.4s ease-out infinite}
+  @keyframes ring{0%{transform:scale(.7);opacity:.7}100%{transform:scale(1.5);opacity:0}}
+  .lamp[data-s="working"]{animation:breathe 1.8s ease-in-out infinite}
+  @keyframes breathe{0%,100%{box-shadow:0 0 0 1px rgba(0,0,0,.35),0 0 9px -2px var(--c),inset 0 1px 1px rgba(255,255,255,.45)}
+    50%{box-shadow:0 0 0 1px rgba(0,0,0,.35),0 0 18px 0 var(--c),inset 0 1px 1px rgba(255,255,255,.45)}}
+
+  .meta{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1}
+  .name{font-family:var(--mono);font-size:0.82rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .sub{font-size:0.7rem;color:var(--muted);font-family:var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .sub.alert{color:var(--waiting)}
+  .muteflag{margin-left:auto;font-size:0.6rem;color:var(--muted)}
+
+  .empty{padding:18px 12px;text-align:center;color:var(--muted);font-family:var(--mono);font-size:0.7rem;line-height:1.5}
+  body.compact:not(.peek) .empty{font-size:0.6rem;padding:12px 4px}
+
+  .menu{position:fixed;z-index:50;min-width:172px;background:rgba(28,32,42,0.98);
+    border:1px solid var(--line);border-radius:11px;padding:5px;box-shadow:0 14px 38px rgba(0,0,0,0.6);
+    -webkit-backdrop-filter:blur(20px);backdrop-filter:blur(20px);display:none}
+  .menu.open{display:block}
+  .menu .mi{padding:7px 10px;border-radius:7px;font-size:0.76rem;cursor:pointer;display:flex;align-items:center;gap:8px}
+  .menu .mi:hover{background:var(--accent);color:#fff}
+  .menu .sep{height:1px;background:var(--line);margin:4px 2px}
+
+  .sheet{position:fixed;inset:0;z-index:60;display:none;background:rgba(10,12,16,0.7);
+    -webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
+  .sheet.open{display:block}
+  .sheet-inner{position:absolute;inset:7px;background:var(--panel);border:1px solid var(--line);
+    border-radius:14px;overflow:auto;padding:12px 13px}
+  .sheet h2{font-family:var(--mono);font-size:0.72rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:10px}
+  .row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px solid var(--line);font-size:0.76rem}
+  .row:last-of-type{border-bottom:0}
+  .row input[type=text],.row select{background:rgba(255,255,255,0.06);border:1px solid var(--line);color:var(--text);
+    border-radius:7px;padding:4px 7px;font-size:0.72rem;font-family:var(--mono);max-width:130px}
+  .row input[type=range]{width:110px;accent-color:var(--accent)}
+  .row input[type=color]{width:28px;height:22px;border:0;background:transparent;padding:0}
+  .sndwrap{display:flex;align-items:center;gap:6px}
+  .play{appearance:none;border:1px solid var(--line);background:rgba(255,255,255,0.06);color:var(--text);
+    width:24px;height:24px;border-radius:7px;cursor:pointer;flex:none;font-size:0.6rem;line-height:1;
+    display:flex;align-items:center;justify-content:center}
+  .play:hover{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .play:disabled{opacity:0.35;cursor:default}
+  .switch{width:36px;height:20px;border-radius:20px;background:rgba(255,255,255,0.12);position:relative;cursor:pointer;transition:.18s;flex:none}
+  .switch::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;transition:.18s}
+  .switch.on{background:var(--accent)}
+  .switch.on::after{left:18px}
+  .sheet .done-btn{margin-top:12px;width:100%;padding:9px;border:0;border-radius:9px;background:var(--accent);
+    color:#fff;font-size:0.78rem;font-weight:600;cursor:pointer;font-family:var(--sans)}
+  .hint{color:var(--muted);font-size:0.66rem;margin-top:8px;line-height:1.5}
+</style>
+</head>
+<body class="icons compact">
+  <div class="panel" id="panel">
+    <div class="bar">
+      <div class="grip"><span class="pip"></span><span class="brand">signals</span></div>
+      <button id="compactBtn" title="Pin compact / full">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 4 4 8l4 4M16 20l4-4-4-4"/></svg>
+      </button>
+      <button id="gearBtn" title="Settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1V21a2 2 0 1 1-4 0v-.2a1.6 1.6 0 0 0-2.7-1.1l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.6 1.6 0 0 0 4 15H3a2 2 0 1 1 0-4h.2A1.6 1.6 0 0 0 4.3 8.3l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.6 1.6 0 0 0 10 4.6V4a2 2 0 1 1 4 0v.2a1.6 1.6 0 0 0 2.7 1.1l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0 1.1 2.7H21a2 2 0 1 1 0 4h-.2"/></svg>
+      </button>
+      <button id="quitBtn" title="Quit">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+    <div class="tower" id="tower"></div>
+  </div>
+
+  <div class="menu" id="menu"></div>
+  <div class="sheet" id="sheet"><div class="sheet-inner" id="sheetInner"></div></div>
+
+<script>
+const ICONS={
+  working:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.2-8.6"/></svg>',
+  waiting:'<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a6 6 0 0 0-6 6c0 5-2 6-2 6h16s-2-1-2-6a6 6 0 0 0-6-6Zm0 20a2.5 2.5 0 0 0 2.4-2h-4.8A2.5 2.5 0 0 0 12 22Z"/></svg>',
+  done:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4 10-11"/></svg>',
+  idle:'<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="4"/></svg>',
+};
+let SETTINGS={}, STATE=[], MONITORS=1;
+
+function api(){return (window.pywebview&&window.pywebview.api)||null;}
+function fmt(s){s=Math.max(0,Math.floor(s));if(s<60)return s+'s';const m=Math.floor(s/60),x=s%60;
+  if(m<60)return m+'m '+x+'s';const h=Math.floor(m/60);return h+'h '+(m%60)+'m';}
+function esc(s){return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+function subline(r){
+  const since=(Date.now()/1000)-(r.status_since||0);
+  if(r.status==='working')return{t:'working · '+fmt(since),alert:false};
+  if(r.status==='waiting'){const m={approval:'needs approval',idle:'idle',input:'waiting for input'};
+    return{t:(m[r.label]||'waiting')+' · '+fmt(since),alert:true};}
+  if(r.status==='done')return{t:'done · '+fmt(since)+' ago',alert:false};
+  return{t:'ready',alert:false};
+}
+function isFull(){return !SETTINGS.compact || document.body.classList.contains('peek');}
+
+function render(){
+  const tower=document.getElementById('tower');
+  if(!STATE.length){
+    tower.innerHTML='<div class="empty">'+(isFull()?'No active Claude sessions.<br>Start Claude Code in a project.':'idle')+'</div>';
+    fit();return;
+  }
+  tower.innerHTML='';
+  for(const r of STATE){
+    const sig=document.createElement('div');
+    sig.className='sig';sig.title=r.project+' — '+r.path;
+    const sl=subline(r);
+    sig.innerHTML='<div class="lamp" data-s="'+r.status+'">'+(ICONS[r.status]||'')+'</div>'+
+      '<div class="meta"><div class="name">'+esc(r.project)+'</div>'+
+      '<div class="sub'+(sl.alert?' alert':'')+'">'+esc(sl.t)+
+      (r.muted?' <span class="muteflag">muted</span>':'')+'</div></div>';
+    sig.onclick=()=>{ if(!api())return; api().open_ide(r.path,''); if(r.status==='done')api().acknowledge(r.path); };
+    sig.oncontextmenu=(e)=>{e.preventDefault();openMenu(e,r);};
+    tower.appendChild(sig);
+  }
+  fit();
+}
+function fit(){
+  const h=Math.ceil(document.querySelector('.panel').getBoundingClientRect().height)+16;
+  api()&&api().set_height(h);
+}
+
+/* ---- drag: free while held, snap on release (Python decides the side) ----
+   We anchor the window to the primary screen and move it with GLOBAL cursor
+   coordinates (e.screenX/Y), which are negative on a left-positioned monitor.
+   This avoids pywebview's native drag, which mis-handles non-zero screen
+   origins and flings the window off a left/secondary display. */
+let dragging=false, grabDX=0, grabDY=0, lastG=null, rafPend=null, leaveT=null;
+const panelEl=document.getElementById('panel');
+const gripEl=document.querySelector('.grip');
+
+gripEl.addEventListener('mousedown',(e)=>{
+  dragging=true;grabDX=e.clientX;grabDY=e.clientY;lastG=null;
+  if(leaveT){clearTimeout(leaveT);leaveT=null;}
+  api()&&api().drag_start();
+  e.preventDefault();
+});
+window.addEventListener('mousemove',(e)=>{
+  if(!dragging)return;
+  lastG=[e.screenX-grabDX, e.screenY-grabDY];      // desired window top-left, global
+  if(rafPend)return;
+  rafPend=requestAnimationFrame(()=>{
+    rafPend=null;
+    if(lastG&&api())api().move_to_global(lastG[0],lastG[1]);
+  });
+});
+window.addEventListener('mouseup',(e)=>{
+  if(!dragging)return;
+  dragging=false;
+  const gx=e.screenX-grabDX, gy=e.screenY-grabDY;
+  api()&&api().drag_end(gx,gy);
+});
+
+/* ---- hover peek ---- */
+function enterPeek(){
+  if(dragging)return;
+  if(leaveT){clearTimeout(leaveT);leaveT=null;}
+  if(SETTINGS.hover_expand && SETTINGS.compact && !document.body.classList.contains('peek')){
+    document.body.classList.add('peek');api()&&api().set_peek(true);render();
+  }
+}
+function leavePeek(){
+  if(dragging)return;
+  if(!(SETTINGS.hover_expand && SETTINGS.compact))return;
+  if(document.getElementById('sheet').classList.contains('open'))return;
+  if(leaveT)return;
+  leaveT=setTimeout(()=>{
+    leaveT=null;
+    document.body.classList.remove('peek');api()&&api().set_peek(false);render();
+  },180);
+}
+panelEl.addEventListener('mouseenter',enterPeek);
+panelEl.addEventListener('mouseleave',leavePeek);
+/* macOS doesn't deliver mouseenter/leave to the webview when the panel isn't the
+   focused window, so monitor.py polls the global cursor and drives hover here. */
+window.__hover=function(inside){ inside?enterPeek():leavePeek(); };
+
+/* ---- context menu ---- */
+function openMenu(e,r){
+  const m=document.getElementById('menu');
+  const items=[
+    ['Open in IDE',()=>api().open_ide(r.path,'')],
+    ['Open in '+(SETTINGS.fallback_ide_app||'other IDE'),()=>api().open_ide(r.path,SETTINGS.fallback_ide_app||'')],
+    ['Open terminal here',()=>api().open_terminal(r.path)],
+    ['Copy path',()=>api().copy_path(r.path)],
+    ['sep'],
+    [r.muted?'Unmute notifications':'Mute notifications',()=>api().set_mute(r.path,!r.muted)],
+    ['Dismiss signal',()=>api().dismiss(r.path)],
+    ['sep'],
+    ['Force close session',()=>api().force_close(r.path)],
+  ];
+  m.innerHTML=items.map(it=>it[0]==='sep'?'<div class="sep"></div>':'<div class="mi">'+esc(it[0])+'</div>').join('');
+  let idx=0;
+  m.querySelectorAll('.mi').forEach(el=>{while(items[idx][0]==='sep')idx++;const fn=items[idx][1];idx++;
+    el.onclick=()=>{closeMenu();try{fn();}catch(e){}};});
+  m.classList.add('open');
+  m.style.left=Math.min(e.clientX,window.innerWidth-m.offsetWidth-6)+'px';
+  m.style.top=Math.min(e.clientY,window.innerHeight-m.offsetHeight-6)+'px';
+}
+function closeMenu(){document.getElementById('menu').classList.remove('open');}
+document.addEventListener('click',closeMenu);
+
+/* ---- settings ---- */
+function buildSheet(){
+  const S=SETTINGS, inner=document.getElementById('sheetInner');
+  const sw=(k)=>'<div class="switch'+(S[k]?' on':'')+'" data-t="'+k+'"></div>';
+  const sounds=['none','Submarine','Glass','Ping','Hero','Funk','Sosumi','Tink','Bottle'];
+  const sel=(k,opts)=>'<select data-s="'+k+'">'+opts.map(o=>'<option'+(S[k]===o?' selected':'')+'>'+o+'</option>').join('')+'</select>';
+  // sound picker + a button to preview the currently-selected sound
+  const selSound=(k)=>'<div class="sndwrap">'+sel(k,sounds)+
+    '<button class="play" data-play="'+k+'" title="Play selected sound">▶</button></div>';
+  let monRow='';
+  if(MONITORS>1){
+    let opts='';for(let i=0;i<MONITORS;i++)opts+='<option value="'+i+'"'+(S.monitor===i?' selected':'')+'>Display '+(i+1)+'</option>';
+    monRow=row('Display','<select data-n="monitor">'+opts+'</select>');
+  }
+  inner.innerHTML='<h2>Settings</h2>'+
+    row('Rest compact (peek on hover)',sw('compact'))+
+    row('Expand on hover',sw('hover_expand'))+
+    row('Show icon inside light',sw('show_icon'))+
+    row('Snap edge',sel('edge',['right','left']))+
+    monRow+
+    row('Notify when waiting',sw('notify_on_waiting'))+
+    row('Notify when done',sw('notify_on_done'))+
+    row('Remember position',sw('remember_position'))+
+    row('Waiting sound',selSound('sound_waiting'))+
+    row('Done sound',selSound('sound_done'))+
+    row('Sort by',sel('sort',['urgency','recent','name']))+
+    row('Accent','<input type="color" data-c="accent" value="'+(S.accent||'#6E8BFF')+'">')+
+    row('Opacity','<input type="range" min="0.5" max="1" step="0.02" data-r="opacity" value="'+(S.opacity||0.92)+'">')+
+    row('Text size','<input type="range" min="0.8" max="1.4" step="0.05" data-r="font_scale" value="'+(S.font_scale||1)+'">')+
+    row('IDE app','<input type="text" data-x="default_ide_app" value="'+esc(S.default_ide_app||'')+'">')+
+    row('2nd IDE app','<input type="text" data-x="fallback_ide_app" value="'+esc(S.fallback_ide_app||'')+'">')+
+    row('Terminal app','<input type="text" data-x="terminal_app" value="'+esc(S.terminal_app||'')+'">')+
+    '<button class="done-btn" id="sheetDone">Done</button>';
+  inner.querySelectorAll('.switch').forEach(el=>el.onclick=()=>{el.classList.toggle('on');patch(el.dataset.t,el.classList.contains('on'));});
+  inner.querySelectorAll('[data-s]').forEach(el=>el.onchange=()=>patch(el.dataset.s,el.value));
+  inner.querySelectorAll('[data-play]').forEach(el=>el.onclick=()=>{const v=SETTINGS[el.dataset.play]||'';
+    if(v&&v.toLowerCase()!=='none')api()&&api().preview_sound(v);});
+  inner.querySelectorAll('[data-n]').forEach(el=>el.onchange=()=>patch(el.dataset.n,parseInt(el.value)));
+  inner.querySelectorAll('[data-c]').forEach(el=>el.oninput=()=>patch(el.dataset.c,el.value));
+  inner.querySelectorAll('[data-r]').forEach(el=>el.oninput=()=>patch(el.dataset.r,parseFloat(el.value)));
+  inner.querySelectorAll('[data-x]').forEach(el=>el.onchange=()=>patch(el.dataset.x,el.value));
+  document.getElementById('sheetDone').onclick=()=>document.getElementById('sheet').classList.remove('open');
+}
+function row(label,ctrl){return '<div class="row"><label>'+label+'</label>'+ctrl+'</div>';}
+function patch(k,v){SETTINGS[k]=v;applyTheme();render();api()&&api().save_settings(SETTINGS);}
+
+function applyTheme(){
+  const r=document.documentElement.style;
+  r.setProperty('--accent',SETTINGS.accent||'#6E8BFF');
+  r.setProperty('--scale',SETTINGS.font_scale||1);
+  r.setProperty('--panel','rgba(16,19,26,'+(SETTINGS.opacity??0.92)+')');
+  document.body.classList.toggle('icons',!!SETTINGS.show_icon);
+  document.body.classList.toggle('compact',!!SETTINGS.compact);
+  if(!SETTINGS.compact)document.body.classList.remove('peek');
+}
+
+document.getElementById('gearBtn').onclick=()=>{buildSheet();document.getElementById('sheet').classList.add('open');
+  if(SETTINGS.compact){document.body.classList.add('peek');api()&&api().set_peek(true);}};
+document.getElementById('compactBtn').onclick=()=>{SETTINGS.compact=!SETTINGS.compact;applyTheme();
+  api()&&api().set_peek(false);render();api()&&api().save_settings(SETTINGS);};
+document.getElementById('quitBtn').onclick=()=>api()&&api().quit();
+
+window.__apply=function(items){STATE=items||[];render();};
+window.__settings=function(s){SETTINGS=s||SETTINGS;applyTheme();render();};
+setInterval(()=>{if(STATE.length)render();},1000);
+
+function boot(){
+  if(!api()){setTimeout(boot,120);return;}
+  api().get_initial().then(d=>{SETTINGS=d.settings||{};STATE=d.state||[];MONITORS=d.monitors||1;applyTheme();render();});
+}
+window.addEventListener('pywebviewready',boot);
+boot();
+</script>
+</body>
+</html>

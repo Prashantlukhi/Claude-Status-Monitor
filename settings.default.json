@@ -1,0 +1,23 @@
+{
+  "theme": "dark",
+  "accent": "#6E8BFF",
+  "opacity": 0.92,
+  "show_icon": true,
+  "compact": false,
+  "edge": "right",
+  "font_scale": 1.0,
+  "default_ide_app": "Cursor",
+  "fallback_ide_app": "Visual Studio Code",
+  "terminal_app": "Terminal",
+  "notify_on_waiting": true,
+  "notify_on_done": false,
+  "sound_waiting": "Submarine",
+  "sound_done": "Glass",
+  "hotkey": "<ctrl>+<alt>+m",
+  "poll_interval": 0.6,
+  "remember_position": true,
+  "sort": "urgency",
+  "stale_after": 0,
+  "pos": null,
+  "muted": []
+}

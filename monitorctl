@@ -1,0 +1,105 @@
+#!/bin/bash
+# monitorctl - manage the Claude status monitor panel and its login auto-launch.
+#
+#   ./monitorctl start    Start the panel now
+#   ./monitorctl stop     Stop/hide the panel now (stays closed until you start it
+#                         again, or until the next login if auto-launch is on)
+#   ./monitorctl on       Turn auto-launch ON  (starts at every login/restart) + start now
+#   ./monitorctl off      Turn auto-launch OFF persistently (won't start on restart) + stop now
+#   ./monitorctl status   Show whether it's running and whether auto-launch is on
+#   ./monitorctl restart  Stop then start now
+
+LABEL="com.claude.statusmonitor"
+PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+APP_DIR="$HOME/.claude-status-monitor"
+APP_BUNDLE="$APP_DIR/claude_monitor.app"
+UID_NUM="$(id -u)"
+DOMAIN="gui/$UID_NUM"
+TARGET="$DOMAIN/$LABEL"
+
+ensure_loaded() {
+    # Register the agent with launchd if it isn't already, and wait for it to load.
+    if ! launchctl print "$TARGET" >/dev/null 2>&1; then
+        launchctl bootstrap "$DOMAIN" "$PLIST" 2>/dev/null
+        for _ in 1 2 3 4 5; do
+            launchctl print "$TARGET" >/dev/null 2>&1 && break
+            sleep 0.3
+        done
+    fi
+}
+
+_stop_panel() {
+    launchctl kill SIGTERM "$TARGET" 2>/dev/null
+    pkill -f "claude_monitor" 2>/dev/null
+    pkill -f "monitor.py" 2>/dev/null
+}
+
+_open_panel() {
+    # Launch the .app bundle — this is fully detached from any terminal,
+    # so closing the terminal that ran monitorctl will NOT kill the panel.
+    # Falls back to nohup python if the app bundle isn't found.
+    if [ -d "$APP_BUNDLE" ]; then
+        open "$APP_BUNDLE"
+    else
+        nohup "$APP_DIR/venv/bin/python3" "$APP_DIR/monitor.py" \
+            >>/tmp/claude-monitor.log 2>&1 &
+        disown
+    fi
+}
+
+case "$1" in
+    start)
+        # Kill any existing instance, then launch detached from the terminal.
+        _stop_panel; sleep 0.4
+        _open_panel
+        echo "Started in background (closing this terminal won't affect the panel)."
+        ;;
+    stop)
+        # Stop the running panel without changing the auto-launch setting.
+        _stop_panel
+        echo "Stopped (auto-launch setting unchanged)."
+        ;;
+    on)
+        launchctl enable "$TARGET" 2>/dev/null
+        ensure_loaded
+        launchctl kickstart -k "$TARGET" 2>/dev/null
+        echo "Auto-launch at login: ON. Panel started."
+        ;;
+    off)
+        # Persistently disable login auto-launch and stop it now.
+        launchctl disable "$TARGET" 2>/dev/null
+        launchctl bootout "$TARGET" 2>/dev/null
+        _stop_panel
+        echo "Auto-launch at login: OFF (won't start on restart). Panel stopped."
+        ;;
+    restart)
+        "$0" stop; sleep 1; "$0" start
+        ;;
+    status)
+        if pgrep -f "monitor.py" >/dev/null 2>&1; then
+            echo "Panel:       RUNNING (pid $(pgrep -f monitor.py | tr '\n' ' '))"
+        else
+            echo "Panel:       not running"
+        fi
+        if launchctl print-disabled "$DOMAIN" 2>/dev/null | grep -q "\"$LABEL\" => disabled"; then
+            echo "Auto-launch: OFF (disabled)"
+        elif launchctl print-disabled "$DOMAIN" 2>/dev/null | grep -q "\"$LABEL\" => enabled"; then
+            echo "Auto-launch: ON (enabled)"
+        elif [ -f "$PLIST" ]; then
+            echo "Auto-launch: ON (default — agent installed)"
+        else
+            echo "Auto-launch: not installed"
+        fi
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|on|off|restart|status}"
+        echo
+        echo "  start    start the panel now"
+        echo "  stop     close the panel now (stays closed until you start it again)"
+        echo "  on       enable auto-launch at login + start now"
+        echo "  off      disable auto-launch at login (persists across restarts) + stop now"
+        echo "  restart  stop then start"
+        echo "  status   show running + auto-launch state"
+        exit 1
+        ;;
+esac
