@@ -10,8 +10,8 @@ Claude Code hooks write tiny JSON status files to `~/.claude-status/` as Claude 
 
 | Light color | Meaning |
 |---|---|
-| Blue (pulsing) | Claude is working |
-| Yellow | Waiting for your input |
+| Amber / Orange | Claude is working (pulsing glow) |
+| Red | Waiting for your input (pulsing ring) |
 | Green | Response complete |
 | Grey | Idle / no activity |
 
@@ -20,7 +20,7 @@ Claude Code hooks write tiny JSON status files to `~/.claude-status/` as Claude 
 ## Use Cases
 
 **Running multiple Claude sessions at once**
-You have 3 projects open — frontend, backend, and a docs task. The panel shows all three lights. You see the backend session turn yellow (needs input) while the others keep working, so you jump in immediately.
+You have 3 projects open — frontend, backend, and a docs task. The panel shows all three lights. You see the backend session turn red (needs input) while the others keep working, so you jump in immediately.
 
 **Staying in the zone**
 No more alt-tabbing to check if Claude is done. The panel sits at your screen edge; a quick eye glance tells you the status. It even sends a macOS notification + sound when Claude finishes or needs you.
