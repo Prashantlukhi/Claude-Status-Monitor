@@ -10,8 +10,8 @@ Claude Code hooks write tiny JSON status files to `~/.claude-status/` as Claude 
 
 | Light color | Meaning |
 |---|---|
-| Amber / Orange | Claude is working (pulsing glow) |
-| Red | Waiting for your input (pulsing ring) |
+| Orange (pulsing glow) | Claude is working |
+| Red (pulsing ring) | Waiting for your input |
 | Green | Response complete |
 | Grey | Idle / no activity |
 
