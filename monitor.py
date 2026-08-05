@@ -21,8 +21,10 @@ import sys
 import json
 import time
 import glob
+import shutil
 import threading
 import subprocess
+from urllib.parse import urlparse, unquote
 
 import webview  # pip3 install pywebview
 
@@ -296,6 +298,20 @@ class App:
         self.save_settings(self.settings)        # persists, then snaps (no relaunch)
 
     # ---------- status snapshot ----------
+    @staticmethod
+    def _pid_alive(pid):
+        # PID liveness check via signal 0: doesn't actually signal the process,
+        # just probes whether it exists and we're allowed to see it.
+        if not pid:
+            return True  # no PID recorded (older status file) -- don't reap blind
+        try:
+            os.kill(int(pid), 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except Exception:
+            return True  # e.g. PermissionError -- process exists, just not ours
+
     def snapshot(self):
         items = []
         muted = set(self.settings.get("muted", []))
@@ -306,6 +322,16 @@ class App:
                 with open(fp) as f:
                     rec = json.load(f)
             except Exception:
+                continue
+            # Reap signals whose session process is no longer running. Normally
+            # the SessionEnd hook deletes the file on a clean exit, but a killed
+            # terminal, `kill -9`, crash, or system sleep skips that hook and
+            # leaves the file behind forever -- this is the actual backstop.
+            if not self._pid_alive(rec.get("pid")):
+                try:
+                    os.remove(fp)
+                except FileNotFoundError:
+                    pass
                 continue
             # Track sessions whose Stop/Notification hooks are working correctly.
             # When the hook writes "waiting", "done", or "idle" we record the
@@ -350,6 +376,38 @@ class App:
             elif sid not in by_session or item.get("updated_at", 0) > by_session[sid].get("updated_at", 0):
                 by_session[sid] = item
         items = no_session + list(by_session.values())
+
+        # Fold subdirectory / same-path sessions into their parent project instead
+        # of showing them as separate, unrelated-looking top-level signals. Two
+        # cases land here even after the session_id dedup above:
+        #   1. Same exact path, different session_id (e.g. one Claude session in a
+        #      terminal and another via an IDE extension, both scoped to the same
+        #      project root).
+        #   2. A path that is a *subdirectory* of another tracked project's path
+        #      (e.g. ".../Openclaw/configs" alongside ".../Openclaw") -- Claude
+        #      Code was invoked with a nested cwd, which otherwise renders as an
+        #      unrelated project named after the subfolder.
+        # In both cases we keep one signal at the parent's path/project name and
+        # let whichever status is most urgent (see STATUS_RANK) win.
+        items.sort(key=lambda r: len(((r.get("path") or "")).rstrip("/")))
+        merged: list = []
+        for item in items:
+            ipath = (item.get("path") or "").rstrip("/")
+            parent = None
+            for existing in merged:
+                epath = (existing.get("path") or "").rstrip("/")
+                if epath and (ipath == epath or ipath.startswith(epath + "/")):
+                    parent = existing
+                    break
+            if parent is None:
+                merged.append(item)
+                continue
+            if STATUS_RANK.get(item.get("status"), 9) < STATUS_RANK.get(parent.get("status"), 9):
+                parent["status"] = item.get("status")
+                parent["label"] = item.get("label", parent.get("label"))
+                parent["status_since"] = item.get("status_since", parent.get("status_since"))
+            parent["updated_at"] = max(parent.get("updated_at", 0), item.get("updated_at", 0))
+        items = merged
 
         items.sort(key=sort_key)
         return items
@@ -481,12 +539,131 @@ class App:
             pass
 
     # ---------- actions ----------
+    # VS Code-family apps ship a CLI shim (`code`, `cursor`, ...) that talks to
+    # the already-running instance and FOCUSES an existing window for a folder
+    # that's already open there. `open -a <App> <path>` instead goes through
+    # LaunchServices' generic "open this document" path, which most of these
+    # editors treat as "open a new window" every time -- so clicking the same
+    # signal repeatedly kept spawning duplicate windows. Prefer the CLI shim;
+    # fall back to `open -a` for apps that don't have one.
+    _IDE_CLI_NAMES = {
+        "cursor": "cursor",
+        "visual studio code": "code",
+        "vscode": "code",
+        "vscodium": "codium",
+        "windsurf": "windsurf",
+    }
+
+    def _ide_cli_path(self, app_name):
+        cli = self._IDE_CLI_NAMES.get((app_name or "").strip().lower())
+        if not cli:
+            return None
+        found = shutil.which(cli)
+        if found:
+            return found
+        # Common case: the CLI shim exists inside the .app bundle but was
+        # never symlinked onto PATH (e.g. Cursor's "Shell Command: Install
+        # 'cursor' command" was never run).
+        for base in ("/Applications", os.path.expanduser("~/Applications")):
+            candidate = os.path.join(base, app_name + ".app",
+                                      "Contents/Resources/app/bin", cli)
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+        return None
+
+    # Where each editor keeps its live window state (VS Code-family apps all
+    # use the same globalStorage/storage.json shape under their own support
+    # folder).
+    _IDE_STORAGE_DIRS = {
+        "cursor": "Cursor",
+        "visual studio code": "Code",
+        "vscode": "Code",
+        "vscodium": "VSCodium",
+        "windsurf": "Windsurf",
+    }
+
+    def _uri_to_path(self, uri):
+        try:
+            u = urlparse(uri)
+            if u.scheme != "file":
+                return None
+            return os.path.realpath(unquote(u.path))
+        except Exception:
+            return None
+
+    def _resolve_open_target(self, path, app_name):
+        """Bare `open -a <App> <path>` correctly reuses/focuses an existing
+        window when that path was itself opened as a standalone folder --
+        that's already working. It can't match when `path` is really just
+        one root *inside* an already-open multi-root workspace (e.g. a
+        `.code-workspace` file listing it alongside sibling folders) --
+        there, the window's identity is the *workspace file*, not any one of
+        its folders, so the bare path never matches and a duplicate
+        single-folder window gets created instead.
+
+        We resolve that by reading the editor's own persisted window state
+        (globalStorage/storage.json -> windowsState) and, if `path` turns up
+        as a folder inside a currently-open workspace file, returning that
+        workspace file's path instead -- which *does* match the open window.
+        Falls back to `path` unchanged if nothing can be determined (covers
+        the already-working standalone-folder case, and any failure mode).
+        """
+        folder = self._IDE_STORAGE_DIRS.get((app_name or "").strip().lower())
+        if not folder:
+            return path
+        storage = os.path.join(HOME, "Library/Application Support", folder,
+                                "User/globalStorage/storage.json")
+        try:
+            with open(storage) as f:
+                data = json.load(f)
+        except Exception:
+            return path
+        ws = data.get("windowsState", {})
+        entries = list(ws.get("openedWindows") or [])
+        last = ws.get("lastActiveWindow")
+        if last:
+            entries.append(last)
+        target = os.path.realpath(path)
+        for entry in entries:
+            wsid = (entry or {}).get("workspaceIdentifier") or {}
+            cfg = wsid.get("configURIPath")
+            if not cfg:
+                continue
+            ws_file = self._uri_to_path(cfg)
+            if not ws_file or not os.path.isfile(ws_file):
+                continue
+            try:
+                with open(ws_file) as f:
+                    ws_data = json.load(f)
+            except Exception:
+                continue
+            base = os.path.dirname(ws_file)
+            for fentry in ws_data.get("folders", []) or []:
+                fp = fentry.get("path")
+                if not fp:
+                    continue
+                resolved = os.path.realpath(
+                    fp if os.path.isabs(fp) else os.path.join(base, fp))
+                if resolved == target:
+                    return ws_file
+        return path
+
     def open_ide(self, path, app_name=""):
         path = os.path.expanduser(path or "")
         for app in [a for a in (app_name, self.settings.get("default_ide_app"),
                                 self.settings.get("fallback_ide_app")) if a]:
+            target = self._resolve_open_target(path, app)
+            cli = self._ide_cli_path(app)
+            if cli:
+                try:
+                    if subprocess.run([cli, target],
+                                      stdout=subprocess.DEVNULL,
+                                      stderr=subprocess.DEVNULL).returncode == 0:
+                        return True
+                except Exception:
+                    pass
             try:
-                if subprocess.run(["open", "-a", app, path],
+                if subprocess.run(["open", "-a", app, target],
                                   stdout=subprocess.DEVNULL,
                                   stderr=subprocess.DEVNULL).returncode == 0:
                     return True

@@ -61,6 +61,12 @@ def main():
     cwd = payload.get("cwd") or os.getcwd()
     session_id = payload.get("session_id", "")
     tool = payload.get("tool_name", "")
+    # The hook process's parent is the actual long-running `claude` process for
+    # this session. Recording it lets the panel verify the session is still
+    # alive and reap the status file itself if that process is gone -- e.g. the
+    # terminal was closed, the process was kill -9'd, or the Mac slept/crashed
+    # -- none of which fire the SessionEnd hook that normally does the cleanup.
+    pid = os.getppid()
 
     project = os.path.basename(cwd.rstrip("/")) or cwd
 
@@ -93,6 +99,7 @@ def main():
         "label": label,
         "session_id": session_id,
         "last_tool": tool,
+        "pid": pid,
         "updated_at": now,
         "status_since": status_since,
     }
