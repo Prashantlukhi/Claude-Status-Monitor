@@ -214,7 +214,9 @@ window.addEventListener('mouseup',(e)=>{
 });
 
 /* ---- hover peek ---- */
+let overPanel=false;
 function enterPeek(){
+  overPanel=true;
   if(dragging)return;
   if(leaveT){clearTimeout(leaveT);leaveT=null;}
   if(SETTINGS.hover_expand && SETTINGS.compact && !document.body.classList.contains('peek')){
@@ -222,9 +224,15 @@ function enterPeek(){
   }
 }
 function leavePeek(){
+  overPanel=false;
   if(dragging)return;
   if(!(SETTINGS.hover_expand && SETTINGS.compact))return;
   if(document.getElementById('sheet').classList.contains('open'))return;
+  // Don't collapse out from under an open context menu -- it renders outside
+  // the narrow panel's bounds, so moving the cursor onto it fires this same
+  // mouseleave and would otherwise hide the panel (and the menu with it)
+  // while the menu is still open.
+  if(document.getElementById('menu').classList.contains('open'))return;
   if(leaveT)return;
   leaveT=setTimeout(()=>{
     leaveT=null;
@@ -233,6 +241,12 @@ function leavePeek(){
 }
 panelEl.addEventListener('mouseenter',enterPeek);
 panelEl.addEventListener('mouseleave',leavePeek);
+// Treat hovering the (position:fixed, visually-detached) context menu as an
+// extension of the panel, so moving from a signal row onto its menu doesn't
+// read as "left the panel".
+const menuHoverEl=document.getElementById('menu');
+menuHoverEl.addEventListener('mouseenter',enterPeek);
+menuHoverEl.addEventListener('mouseleave',leavePeek);
 /* macOS doesn't deliver mouseenter/leave to the webview when the panel isn't the
    focused window, so monitor.py polls the global cursor and drives hover here. */
 window.__hover=function(inside){ inside?enterPeek():leavePeek(); };
@@ -249,7 +263,10 @@ function openMenu(e,r){
     [r.muted?'Unmute notifications':'Mute notifications',()=>api().set_mute(r.path,!r.muted)],
     ['Dismiss signal',()=>api().dismiss(r.path)],
     ['sep'],
-    ['Force close session',()=>api().force_close(r.path)],
+    ['Force close session',()=>{
+      if(confirm('Force close "'+r.project+'"?\nThis sends SIGTERM to the Claude process at:\n'+r.path))
+        api().force_close(r.path);
+    }],
   ];
   m.innerHTML=items.map(it=>it[0]==='sep'?'<div class="sep"></div>':'<div class="mi">'+esc(it[0])+'</div>').join('');
   let idx=0;
@@ -259,7 +276,14 @@ function openMenu(e,r){
   m.style.left=Math.min(e.clientX,window.innerWidth-m.offsetWidth-6)+'px';
   m.style.top=Math.min(e.clientY,window.innerHeight-m.offsetHeight-6)+'px';
 }
-function closeMenu(){document.getElementById('menu').classList.remove('open');}
+function closeMenu(){
+  document.getElementById('menu').classList.remove('open');
+  // The menu-open guard in leavePeek() just lifted -- if the cursor is no
+  // longer actually over the panel or the (now-closing) menu, re-run it so a
+  // pending collapse isn't stranded forever waiting for a mouseleave that
+  // already happened while the guard was blocking it.
+  if(!overPanel)leavePeek();
+}
 document.addEventListener('click',closeMenu);
 
 /* ---- settings ---- */
