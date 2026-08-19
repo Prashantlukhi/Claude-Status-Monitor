@@ -58,9 +58,14 @@ def main():
     except Exception:
         payload = {}
 
-    cwd = payload.get("cwd") or os.getcwd()
-    session_id = payload.get("session_id", "")
-    tool = payload.get("tool_name", "")
+    # Claude Code and Gemini CLI both send {cwd, session_id, tool_name} directly.
+    # Antigravity (agy) uses a different shape -- {workspacePaths: [...],
+    # conversationId, toolCall: {name, ...}} -- so fall back to that before
+    # giving up and using our own process's cwd.
+    cwd = payload.get("cwd") or next(iter(payload.get("workspacePaths") or []), None) \
+        or os.getcwd()
+    session_id = payload.get("session_id") or payload.get("conversationId", "")
+    tool = payload.get("tool_name") or (payload.get("toolCall") or {}).get("name", "")
     # The hook process's parent is the actual long-running `claude` process for
     # this session. Recording it lets the panel verify the session is still
     # alive and reap the status file itself if that process is gone -- e.g. the

@@ -377,7 +377,81 @@ Edit interactively inside a session with **`/config`** (alias `/settings`).
 - **Permissions:** Claude `.claude/settings.json` allow-lists vs `agy`
   `toolPermission` levels vs Gemini's per-tool approval + `--yolo`/sandbox.
 
---------------------------------------------------------------------------------
+---
+
+## Part F — Wiring Gemini CLI and Antigravity (`agy`) into the Claude Status Monitor
+
+`~/.claude-status-monitor` (see its own `README.md`) only ever watched
+`~/.claude-status/*.json` — it's tool-agnostic by design. Originally only Claude
+Code's hooks (`~/.claude/settings.json`) wrote to that folder, so Gemini CLI and
+`agy` sessions never showed a signal even though the panel itself didn't care who
+wrote the file. Fixed by wiring each tool's own hook system to the same
+`status_writer.py`, and teaching `status_writer.py` to read either tool's payload
+shape. Both use their own event names and (for `agy`) a different JSON shape than
+Claude Code, so this isn't a copy-paste of the Claude Code hook block.
+
+### Gemini CLI — `~/.gemini/settings.json` → `"hooks"`
+
+Gemini CLI hooks live in `settings.json` (see the CLI's own bundled
+`docs/hooks/reference.md`), and its base input schema already sends
+`{cwd, session_id, hook_event_name, tool_name, ...}` — the same field names
+Claude Code uses — so `status_writer.py` reads it unmodified. Wired events:
+
+| Gemini event | → status |
+|---|---|
+| `SessionStart` (matcher `startup`) | `idle` |
+| `BeforeAgent` | `working` (Gemini's analogue of Claude's `UserPromptSubmit`) |
+| `BeforeTool` / `AfterTool` | `working` |
+| `Notification` (tool-permission alerts) | `waiting --label approval` |
+| `AfterAgent` (Gemini's analogue of Claude's `Stop`) | `done` |
+| `SessionEnd` | `end` |
+
+> ⚠️ Verified the hook config loads and is schema-valid, but couldn't confirm it
+> *fires* live on this machine — `gemini`'s free "Login with Google" is broken
+> for individuals (see Part A), so real turns fail before any hook would run.
+> Needs a `GEMINI_API_KEY` (or the Antigravity suite) to confirm end-to-end.
+
+### Antigravity (`agy`) — `~/.gemini/config/hooks.json`
+
+`agy` hooks live in a **separate `hooks.json` file**, not `settings.json` —
+checked at `.agents/hooks.json` per-workspace, or `~/.gemini/config/hooks.json`
+globally (all 3 "flavours" of Antigravity read the same locations). Confirmed
+this by watching `~/.gemini/antigravity-cli/log/cli-*.log` for
+`hooks_manager.go` load/parse lines while iterating on the file.
+
+**Schema pitfall:** the schema differs by event. `PreToolUse`/`PostToolUse` nest
+like Claude Code's (`matcher` + `hooks: [{type, command}]`), but
+`PreInvocation`/`PostInvocation`/`Stop` are a **flat array** of `{type, command}`
+directly — no `matcher`, no `hooks` wrapper. Getting this wrong doesn't error
+loudly; it logs `invalid hook "<name>": command hook must specify 'command'` to
+the CLI log and silently no-ops. Wired events:
+
+| `agy` event | → status |
+|---|---|
+| `PreToolUse` / `PostToolUse` (matcher `*`) | `working` |
+| `PreInvocation` | `working` (fires before each model call, i.e. new turn) |
+| `Stop` | `done` |
+
+`agy`'s payload has **no `cwd`/`session_id`/`tool_name`** — instead
+`workspacePaths: [...]`, `conversationId`, `toolCall: {name, ...}`.
+`status_writer.py` now falls back to these when the Claude/Gemini-style fields
+are absent, so one script serves all three tools.
+
+**Verification note:** `agy -p` (headless/print mode) is known-flaky in non-TTY
+contexts (see `google-antigravity/antigravity-cli` issues #318, #76) and did
+**not** reliably fire hooks when scripted here. Confirmed the wiring actually
+works by watching a real, already-running interactive `agy` session's status
+file update live in `~/.claude-status/` — don't re-test with `agy -p` and
+conclude it's broken.
+
+### Files touched
+
+- `status_writer.py` — payload field normalization (`cwd`/`session_id`/`tool_name`
+  now fall back to `agy`'s `workspacePaths`/`conversationId`/`toolCall.name`).
+- `~/.gemini/settings.json` — added `"hooks"` block (Gemini CLI).
+- `~/.gemini/config/hooks.json` — new file (Antigravity `agy`).
+
+---
 
 ## Quick per-project checklist
 

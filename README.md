@@ -125,6 +125,13 @@ Add these hooks to your Claude Code settings (`~/.claude/settings.json`):
 }
 ```
 
+> The panel itself is tool-agnostic — it just watches `~/.claude-status/*.json`.
+> To also get signals from **Gemini CLI** and **Antigravity (`agy`)**, wire their
+> own hook systems to the same `status_writer.py` too. See "Part F — Wiring
+> Gemini CLI and Antigravity" in `AI-AGENTS-SETUP.md` for the exact config
+> (their hook event names, file locations, and payload shapes all differ from
+> Claude Code's).
+
 ### 4. Start the panel
 
 ```bash
